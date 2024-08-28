@@ -13,53 +13,49 @@ import (
 //go:embed npm/index.js
 var src []byte
 
+var runtimes = [3]string{"bun", "node", "deno"}
+
+var runconfig = map[string]struct{ args, env []string }{
+	"node": {args: []string{}, env: []string{"NODE_OPTIONS=--max-old-space-size=16384"}},
+	"deno": {args: []string{"run", "-A"}, env: []string{"V8_FLAGS=--max-old-space-size=16384"}},
+	"bun":  {args: []string{"run", "-bi", "--smol"}, env: []string{"BUN_JSC_forceRAMSize=17179869184"}},
+}
+
 func reduce(fns []string) {
-	if _, ok := os.LookupEnv("FX_JS"); ok {
-		engine.Reduce(fns)
-		return
-	}
-
-	var deno bool
-	bin, err := exec.LookPath("node")
-	if err != nil {
-		bin, err = exec.LookPath("deno")
-		if err != nil {
-			engine.Reduce(fns)
-			return
-		}
-		deno = true
-	}
-
 	script := path.Join(os.TempDir(), fmt.Sprintf("fx-%v.js", version))
-	_, err = os.Stat(script)
+	_, err := os.Stat(script)
 	if os.IsNotExist(err) {
-		err := os.WriteFile(script, src, 0644)
+		err = os.WriteFile(script, src, 0644)
 		if err != nil {
 			panic(err)
 		}
 	}
 
+	var bin string
 	env := os.Environ()
-	var args []string
-
-	if deno {
-		args = []string{"run", "-A", script}
-		env = append(env, "V8_FLAGS=--max-old-space-size=16384")
-	} else {
-		args = []string{script}
-		env = append(env, "NODE_OPTIONS=--max-old-space-size=16384")
+	args := append([]string{script}, fns...)
+	for _, runtime := range runtimes {
+		bin, err = exec.LookPath(runtime)
+		if err == nil {
+			run := runconfig[runtime]
+			env = append(run.env, env...)
+			args = append(run.args, args...)
+			break
+		}
 	}
 
-	args = append(args, fns...)
+	if err != nil {
+		engine.Reduce(fns)
+		return
+	}
 
 	cmd := exec.Command(bin, args...)
 	cmd.Env = env
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	err = cmd.Run()
 
-	switch err := err.(type) {
+	switch err := cmd.Run().(type) {
 	case nil:
 		os.Exit(0)
 	case *exec.ExitError:
